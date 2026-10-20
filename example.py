@@ -66,7 +66,7 @@ def main():
         program.show_coll()
         program.insert_documents(collection_name="Person")
         program.fetch_documents(collection_name="Person")
-        program.drop_coll(collection_name="Person")
+        # program.drop_coll(collection_name="Person")
         # program.drop_coll(collection_name='person')
         # program.drop_coll(collection_name='users')
         # Check that the table is dropped
