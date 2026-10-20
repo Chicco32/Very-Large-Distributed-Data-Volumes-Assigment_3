@@ -1,5 +1,10 @@
 from pymongo import MongoClient, version
+from dotenv import load_dotenv
+import os
 
+
+
+load_dotenv()
 
 class DbConnector:
     """
@@ -12,16 +17,20 @@ class DbConnector:
     PASSWORD = "test123" // The password you set for said user
     """
 
-    def __init__(self,
-                 DATABASE='DATABASE_NAME',
-                 HOST="tdt4225-xx.idi.ntnu.no",
-                 USER="TEST_USER",
-                 PASSWORD="test123"):
-        uri = "mongodb://%s:%s@%s/%s" % (USER, PASSWORD, HOST, DATABASE)
+    def __init__(self):
+        load_dotenv()
+        self.DATABASE = os.getenv("DATABASE")
+        self.HOST = os.getenv("HOST")
+        self.USER = os.getenv("MONGO_INITDB_ROOT_USERNAME")
+        self.PASSWORD = os.getenv("MONGO_INITDB_ROOT_PASSWORD")
+        self.PORT = os.getenv("PORT", "27017")
+        uri = "mongodb://%s:%s@%s:%s/%s?authSource=admin" % (
+            self.USER, self.PASSWORD, self.HOST, self.PORT, self.DATABASE
+        )
         # Connect to the databases
         try:
             self.client = MongoClient(uri)
-            self.db = self.client[DATABASE]
+            self.db = self.client[self.DATABASE]
         except Exception as e:
             print("ERROR: Failed to connect to db:", e)
 
