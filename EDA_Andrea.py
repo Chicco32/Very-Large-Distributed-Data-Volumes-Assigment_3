@@ -1,14 +1,14 @@
 """
 Exploratory Data Analysis (EDA) for Assignment 3 - Very Large Distributed Data Volumes
-Analyzes datasets to verify information required for Queries 1-10 (Part 2)
-and identifies dirty, missing, and corrupted data for cleaning.
+Analyzes datasets to verify information required for Queries 1-10 (Part 2),
+locates exact line numbers of corrupted data, and treats duplicates and anomalies.
 """
 
 import ast
 import json
 import os
 import re
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Set, Tuple
 import numpy as np
 import pandas as pd
 from tabulate import tabulate
@@ -39,10 +39,29 @@ def safe_parse_json(val: Any) -> Any:
             return []
 
 
+def find_corrupted_csv_lines(filepath: str, bad_tokens: List[str]) -> List[Dict[str, Any]]:
+    """Scans the raw CSV file line-by-line to find the exact file line numbers of corrupted data."""
+    corrupted_lines = []
+    if not os.path.exists(filepath):
+        return corrupted_lines
+
+    with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+        for line_num, line in enumerate(f, 1):
+            for token in bad_tokens:
+                if token in line:
+                    corrupted_lines.append({
+                        "file_line_number": line_num,
+                        "matched_token": token,
+                        "raw_line_snippet": line.strip()[:140] + ("..." if len(line.strip()) > 140 else "")
+                    })
+                    break
+    return corrupted_lines
+
+
 # ==============================================================================
-# 1. Global Sanity Checks & Primary Key Verification
+# 1. Global Sanity Checks, Corrupted Lines & Duplicate Treatment
 # ==============================================================================
-def check_dataset_integrity():
+def check_dataset_integrity() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, List[Dict[str, Any]]]:
     print("=" * 80)
     print("1. GLOBAL DATASET INTEGRITY & PRIMARY KEY SANITY CHECKS")
     print("=" * 80)
@@ -54,59 +73,91 @@ def check_dataset_integrity():
 
     # Find malformed rows (where id is not a numeric string)
     numeric_mask = pd.to_numeric(df_movies["id"], errors="coerce").notna()
-    corrupted_rows = df_movies[~numeric_mask]
-    corrupted_count = len(corrupted_rows)
+    corrupted_df_rows = df_movies[~numeric_mask].copy()
+    corrupted_count = len(corrupted_df_rows)
 
+    # Exact line numbers in raw CSV
+    bad_tokens = corrupted_df_rows["id"].astype(str).tolist()
+    raw_corrupted_lines = find_corrupted_csv_lines(MOVIES_METADATA_PATH, bad_tokens)
+
+    # Display corrupted lines details
+    print(f"\n[!] IDENTIFIED CORRUPTED DATA: {corrupted_count} corrupted row(s) found in {MOVIES_METADATA_PATH}:")
+    for item in raw_corrupted_lines:
+        print(f"    - Raw CSV Line {item['file_line_number']}: (token: '{item['matched_token']}')")
+        print(f"      Snippet: {item['raw_line_snippet']}")
+
+    for idx, row in corrupted_df_rows.iterrows():
+        print(f"    - DataFrame Row Index {idx}:")
+        print(f"      id='{row['id']}', title='{row.get('title')}', poster_path='{row.get('poster_path')}', release_date='{row.get('release_date')}'")
+        print(f"      Root Cause: Unquoted newline in the overview of preceding row caused row splitting and column shifts.")
+
+    # Treat corrupted rows: filter out non-numeric IDs
     clean_movies = df_movies[numeric_mask].copy()
     clean_movies["id"] = clean_movies["id"].astype(int)
-    duplicate_movie_ids = clean_movies["id"].duplicated().sum()
-    unique_movie_ids = clean_movies["id"].nunique()
+
+    # Treat duplicates in movies_metadata:
+    # Sort by popularity / vote_count descending so the most complete record is retained
+    clean_movies["popularity_num"] = pd.to_numeric(clean_movies["popularity"], errors="coerce").fillna(0)
+    clean_movies["vote_count_num"] = pd.to_numeric(clean_movies["vote_count"], errors="coerce").fillna(0)
+    duplicate_movie_ids_before = clean_movies["id"].duplicated().sum()
+    clean_movies = clean_movies.sort_values(["popularity_num", "vote_count_num"], ascending=False)
+    clean_movies = clean_movies.drop_duplicates(subset="id", keep="first").sort_index()
+    unique_movie_ids = len(clean_movies)
+    print(f"\n[+] Duplicates in movies_metadata treated: {duplicate_movie_ids_before} duplicate rows removed (kept best record per ID).")
 
     # 1.2 credits.csv
-    print(f"[Loading] {CREDITS_PATH}...")
+    print(f"\n[Loading] {CREDITS_PATH}...")
     df_credits = pd.read_csv(CREDITS_PATH, low_memory=False)
     total_raw_credits = len(df_credits)
     numeric_credits_mask = pd.to_numeric(df_credits["id"], errors="coerce").notna()
     clean_credits = df_credits[numeric_credits_mask].copy()
     clean_credits["id"] = clean_credits["id"].astype(int)
     duplicate_credits_ids = clean_credits["id"].duplicated().sum()
+    # Treat duplicates in credits
+    clean_credits = clean_credits.drop_duplicates(subset="id", keep="first")
+    print(f"[+] Duplicates in credits.csv treated: {duplicate_credits_ids} duplicate rows removed.")
 
     # 1.3 keywords.csv
-    print(f"[Loading] {KEYWORDS_PATH}...")
+    print(f"\n[Loading] {KEYWORDS_PATH}...")
     df_keywords = pd.read_csv(KEYWORDS_PATH, low_memory=False)
     total_raw_keywords = len(df_keywords)
     clean_keywords = df_keywords[pd.to_numeric(df_keywords["id"], errors="coerce").notna()].copy()
     clean_keywords["id"] = clean_keywords["id"].astype(int)
     duplicate_keyword_ids = clean_keywords["id"].duplicated().sum()
+    # Treat duplicates in keywords
+    clean_keywords = clean_keywords.drop_duplicates(subset="id", keep="first")
+    print(f"[+] Duplicates in keywords.csv treated: {duplicate_keyword_ids} duplicate rows removed.")
 
     # 1.4 links.csv
-    print(f"[Loading] {LINKS_PATH}...")
+    print(f"\n[Loading] {LINKS_PATH}...")
     df_links = pd.read_csv(LINKS_PATH, low_memory=False)
     total_raw_links = len(df_links)
     missing_tmdb_in_links = df_links["tmdbId"].isna().sum()
+    duplicate_links = df_links["movieId"].duplicated().sum()
+    # Treat links: drop null tmdbId and duplicates
+    clean_links = df_links.dropna(subset=["tmdbId"]).copy()
+    clean_links["tmdbId"] = clean_links["tmdbId"].astype(int)
+    clean_links["movieId"] = clean_links["movieId"].astype(int)
+    clean_links = clean_links.drop_duplicates(subset="movieId", keep="first")
+    print(f"[+] Links treated: {missing_tmdb_in_links} null tmdbIds dropped, {duplicate_links} duplicate movieIds dropped.")
 
     integrity_table = [
-        ["movies_metadata.csv", total_raw_movies, corrupted_count, duplicate_movie_ids, unique_movie_ids],
-        ["credits.csv", total_raw_credits, total_raw_credits - len(clean_credits), duplicate_credits_ids, clean_credits["id"].nunique()],
-        ["keywords.csv", total_raw_keywords, total_raw_keywords - len(clean_keywords), duplicate_keyword_ids, clean_keywords["id"].nunique()],
-        ["links.csv", total_raw_links, missing_tmdb_in_links, df_links["tmdbId"].dropna().duplicated().sum(), df_links["tmdbId"].dropna().nunique()],
+        ["movies_metadata.csv", total_raw_movies, corrupted_count, duplicate_movie_ids_before, unique_movie_ids],
+        ["credits.csv", total_raw_credits, total_raw_credits - len(clean_credits), duplicate_credits_ids, len(clean_credits)],
+        ["keywords.csv", total_raw_keywords, total_raw_keywords - len(clean_keywords), duplicate_keyword_ids, len(clean_keywords)],
+        ["links.csv", total_raw_links, missing_tmdb_in_links, duplicate_links, len(clean_links)],
     ]
 
-    headers = ["Dataset", "Total Rows", "Corrupted / Missing ID", "Duplicate IDs", "Unique Valid IDs"]
-    print(tabulate(integrity_table, headers=headers, tablefmt="github"))
+    headers = ["Dataset", "Raw Rows", "Corrupted / Missing ID", "Duplicate IDs (Treated)", "Clean Final Rows"]
+    print("\n" + tabulate(integrity_table, headers=headers, tablefmt="github"))
 
-    if corrupted_count > 0:
-        print("\n[!] Example corrupted rows in movies_metadata.csv (column shift anomaly):")
-        for idx, row in corrupted_rows[["id", "title", "release_date"]].iterrows():
-            print(f"    Index {idx}: id='{row['id']}', title='{row['title']}', release_date='{row['release_date']}'")
-
-    return clean_movies, clean_credits, df_links
+    return clean_movies, clean_credits, clean_links, raw_corrupted_lines
 
 
 # ==============================================================================
 # 2. Query Requirements Verification (Queries 1 - 10)
 # ==============================================================================
-def verify_queries_information(clean_movies: pd.DataFrame, clean_credits: pd.DataFrame, links: pd.DataFrame):
+def verify_queries_information(clean_movies: pd.DataFrame, clean_credits: pd.DataFrame, clean_links: pd.DataFrame):
     print("\n" + "=" * 80)
     print("2. QUERY-SPECIFIC DATA AVAILABILITY & HYGIENE VERIFICATION")
     print("=" * 80)
@@ -152,7 +203,6 @@ def verify_queries_information(clean_movies: pd.DataFrame, clean_credits: pd.Dat
     zero_rev_movies = (movies["revenue_num"] == 0).sum()
     pos_rev_movies = (movies["revenue_num"] > 0).sum()
     print(f"  - Total unique directors identified: {len(directors_map)}")
-  
     print(f"  - Directors with >= 5 movies: {len(directors_gte_5)}")
     print(f"  - Movies with 0 revenue reported: {zero_rev_movies} ({zero_rev_movies/len(movies)*100:.1f}%)")
     print(f"  - Movies with positive revenue: {pos_rev_movies} ({pos_rev_movies/len(movies)*100:.1f}%)")
@@ -166,14 +216,10 @@ def verify_queries_information(clean_movies: pd.DataFrame, clean_credits: pd.Dat
     print("\n>>> Query 2: Actor pairs co-starred in >= 3 movies")
     # Sample 5,000 movies to verify pair generation and speed
     pair_counts = {}
-    pair_votes = {}
-    movies_with_cast = 0
     for _, row in movies_credits.head(5000).iterrows():
         cast_list = safe_parse_json(row["cast"])
         if not cast_list:
             continue
-        movies_with_cast += 1
-        # Extract distinct actor names/ids in movie
         actors = sorted(list({m.get("name") for m in cast_list if m.get("name")}))
         for i in range(len(actors)):
             for j in range(i + 1, len(actors)):
@@ -253,10 +299,8 @@ def verify_queries_information(clean_movies: pd.DataFrame, clean_credits: pd.Dat
     # --------------------------------------------------------------------------
     print("\n>>> Query 6: Top-billed 5 cast female proportion by decade")
     gender_distribution = {0: 0, 1: 0, 2: 0}
-    # Check sample credits
     for _, row in movies_credits.head(5000).iterrows():
         cast_list = safe_parse_json(row["cast"])
-        # Cast is already ordered or has 'order'
         cast_sorted = sorted(cast_list, key=lambda x: x.get("order", 999))[:5]
         for c in cast_sorted:
             g = c.get("gender", 0)
@@ -326,7 +370,6 @@ def verify_queries_information(clean_movies: pd.DataFrame, clean_credits: pd.Dat
         p_countries = safe_parse_json(row["production_countries"])
         is_us = any(c.get("iso_3166_1") == "US" or "United States" in c.get("name", "") for c in p_countries)
         if not is_us:
-            # Check company
             p_comp = safe_parse_json(row["production_companies"])
             is_us = any("US" in c.get("name", "") or "United States" in c.get("name", "") for c in p_comp)
         if is_us:
@@ -346,10 +389,9 @@ def verify_queries_information(clean_movies: pd.DataFrame, clean_credits: pd.Dat
     print("\n>>> Query 10: User ratings variance and distinct genres rated")
     print(f"  - Checking {RATINGS_SMALL_PATH}...")
     df_ratings_small = pd.read_csv(RATINGS_SMALL_PATH)
-    clean_links = links.dropna(subset=["tmdbId"]).copy()
-    clean_links["tmdbId"] = clean_links["tmdbId"].astype(int)
+    clean_links_sub = clean_links[["movieId", "tmdbId"]].copy()
 
-    mapped_ratings = df_ratings_small.merge(clean_links[["movieId", "tmdbId"]], on="movieId").merge(
+    mapped_ratings = df_ratings_small.merge(clean_links_sub, on="movieId").merge(
         movies[["id", "genres"]], left_on="tmdbId", right_on="id"
     )
     mapped_count = len(mapped_ratings)
@@ -370,8 +412,8 @@ def verify_queries_information(clean_movies: pd.DataFrame, clean_credits: pd.Dat
 
 
 def main():
-    clean_movies, clean_credits, df_links = check_dataset_integrity()
-    verify_queries_information(clean_movies, clean_credits, df_links)
+    clean_movies, clean_credits, clean_links, corrupted_lines = check_dataset_integrity()
+    verify_queries_information(clean_movies, clean_credits, clean_links)
     print("\nEDA finished successfully.")
 
 

@@ -52,4 +52,3 @@ def analyze_credit_list():
     print(f"Highest number of entries in the credit list: {highest_total}")
     print(f"Lowest number of entries in the credit list: {lowest_total}")
 
-analyze_credit_list()
