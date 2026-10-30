@@ -237,7 +237,8 @@ def verify_queries_information(clean_movies: pd.DataFrame, clean_credits: pd.Dat
     # Query 3: Top 10 actors (>= 10 movies) with widest genre breadth
     # --------------------------------------------------------------------------
     print("\n>>> Query 3: Top 10 actors (>= 10 movies) with widest genre breadth")
-    all_genres = set()
+    from collections import Counter
+    genre_freq = Counter()
     empty_genre_count = 0
     for _, row in movies.iterrows():
         g_list = safe_parse_json(row["genres"])
@@ -245,10 +246,15 @@ def verify_queries_information(clean_movies: pd.DataFrame, clean_credits: pd.Dat
             empty_genre_count += 1
         for g in g_list:
             if g.get("name"):
-                all_genres.add(g.get("name"))
+                genre_freq[g.get("name")] += 1
 
-    print(f"  - Distinct genres found: {len(all_genres)} ({sorted(list(all_genres))[:5]}...)")
+    all_genres = sorted(list(genre_freq.keys()))
+    print(f"  - Total distinct genres found: {len(all_genres)}")
+    print(f"  - All distinct genres ({len(all_genres)}): {', '.join(all_genres)}")
     print(f"  - Movies with missing/empty genre: {empty_genre_count} ({empty_genre_count/len(movies)*100:.1f}%)")
+    print("  - Genre distribution across dataset:")
+    for g, count in genre_freq.most_common():
+        print(f"      * {g:18}: {count:>6,} movies")
     summary_findings.append(["Q3", "credits.cast, movies.genres",
                              f"{len(all_genres)} distinct genres available",
                              "JSON genres require flattening into array of strings"])

@@ -377,8 +377,12 @@ def query_7(db):
     """
     pipeline = [
         {"$match": {
-            "$text": {"$search": "noir neo-noir"},
-            "vote_count": {"$gte": 50}
+            "$text": {"$search": "noir"},
+            "vote_count": {"$gte": 50},
+            "$or": [
+                {"overview": {"$regex": r"neo[- ]noir|\bnoir\b", "$options": "i"}},
+                {"tagline": {"$regex": r"neo[- ]noir|\bnoir\b", "$options": "i"}}
+            ]
         }},
         {"$project": {
             "_id": 0,
@@ -493,7 +497,7 @@ def query_9(db):
             "$or": [
                 {"production_countries.iso_3166_1": "US"},
                 {"production_countries.name": "United States of America"},
-                {"production_companies.name": {"$regex": "United States|USA", "$options": "i"}}
+                {"production_companies.name": {"$regex": r"\b(United States|USA)\b"}}
             ]
         }},
         {"$group": {
